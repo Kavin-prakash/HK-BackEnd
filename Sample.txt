@@ -12,6 +12,8 @@ Return only valid JSON with keys:
 }}
 
 
+Portfolio investment  , UI (Cross check -> Quality check)
+
 
 
 # from langchain_ollama import OllamaLLM

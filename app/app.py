@@ -284,7 +284,7 @@
 #     app.run(debug=True)
 
 
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, make_response
 from flask_cors import CORS
 from langchain_ollama import OllamaLLM
 from langchain.prompts import ChatPromptTemplate
@@ -297,6 +297,7 @@ import google.generativeai as genai
 import json
 import fitz # PyMuPDF
 import uuid # For generating unique filenames
+import shutil # For safely handling directories
 
 app = Flask(__name__)
 CORS(app, origins=["http://localhost:3000"])
@@ -310,66 +311,75 @@ model_ollama = OllamaLLM(model="llama3:latest")
 genai.configure(api_key="YOUR_GEMINI_API_KEY") # Replace with your actual Gemini API key
 model_gemini = genai.GenerativeModel('gemini-1.5-flash')
 
-# Store highlighted PDFs temporarily (in a real app, use a proper storage like S3 or a DB)
-# For simplicity, we'll use a dictionary mapping UUIDs to file paths
-HIGHLIGHTED_PDF_STORAGE = {}
+# Directory to store highlighted PDFs
+# It's better to manage a dedicated temporary directory for PDFs
+PDF_STORAGE_DIR = os.path.join(tempfile.gettempdir(), 'highlighted_pdfs')
+os.makedirs(PDF_STORAGE_DIR, exist_ok=True)
 
 # Prompt template (unchanged)
+# ...existing code...
 prompt_template = """
 You are a financial document analysis AI.
 
-Your task is to extract the following key KPIs from a Capital Call Statement:
-Extract and return only the exact values based on the user's request.
-If no relevant data is found, respond with 'No data found.' Do not provide any additional information beyond the requested values.
-Ensure responses are strictly based on the user's input without relying on pre-trained data or external assumptions.
-Ensure the each and every response that should be in the english language
-### Phrase Mappings:
+## Objective:
+Extract only the key financial KPIs from a Capital Call Statement, strictly following the user's request. Always return results in English, as a valid JSON object, with no extra text or explanation.
+
+## Extraction Protocol:
+- If the user's prompt specifies fields, return **only** those fields.
+- If the user's prompt is empty, return the default JSON template below.
+- Use financial logic, context, and proximity to match values, even if labels differ or are missing.
+- Ignore irrelevant, cumulative, or historical values (e.g., fees, totals to date).
+- If a value cannot be reliably extracted, return it as null.
+
+## Multilingual Handling:
+- If the uploaded document is in Spanish, French, or any other language, **automatically translate** all content to English before extraction.
+- Ensure all extracted values are accurate and contextually correct after translation.
+- Output must always be in English, regardless of input language.
+
+## Output Format:
+- Return **only** a valid, minified JSON object with no extra text.
+- If the user's prompt is empty, use this template:
+{{
+  "commitment_date": "YYYY-MM-DD or null",
+  "effective_date": "YYYY-MM-DD or null",
+  "lp_name": "string or null",
+  "fund_name": "string or null",
+  "capital_call_amount": float or null,
+  "currency": "USD/GBP/EUR/CAD or null"
+}}
+
+## Phrase Mappings:
 commitment_date:
-- Commitment Date, Date of Commitment, Subscription Date, Closing Date, Commitment Effective Date, Investor Commitment Date
-
+- Commitment Date, Date of Commitment, Subscription Date, Closing Date, Commitment Effective Date, Investor Commitment Date, Date Committed, Commitment Execution Date, Date of Subscription, Date of Agreement, Date of Acceptance, Date of Signature, Date Signed, Date of Participation, Date of Entry, Date of Joining, Date of Investment, Date of Initial Commitment
 effective_date:
-- Effective Date, Capital Call Date, Drawdown Date, Notice Date, Issuance Date, Date of Call, Call Date
-
+- Effective Date, Capital Call Date, Drawdown Date, Notice Date, Issuance Date, Date of Call, Call Date, Payment Due Date, Date Payable, Date of Drawdown, Date of Notice, Date of Issuance, Date of Payment, Date Due, Due Date, Date Funds Due, Date of Capital Call, Date of Request, Date of Remittance, Remittance Date
 capital_call_amount:
-- Capital Call Amount,Total Amount, Drawdown Amount, Amount Called, Amount Due, Capital Requested, Capital Contribution, Amount Payable, This Call Amount, Current Call Amount
-
-Balance_Amount:
-- Deposit balance remaining , balance , remaining balance , 
+- Capital Call Amount, Total Amount, Drawdown Amount, Amount Called, Amount Due, Capital Requested, Capital Contribution, Amount Payable, This Call Amount, Current Call Amount, Amount to be Paid, Payment Amount, Amount Required, Amount Requested, Subscription Amount, Payable Amount, Amount Owed, Amount to Remit, Remittance Amount, Amount to be Contributed, Amount for this Call, Amount Payable on Notice, Amount to be Drawn, Amount to be Settled
+balance_amount:
+- Deposit balance remaining, balance, remaining balance, outstanding balance, available balance, balance due, uncalled balance, undrawn balance, unpaid balance, amount remaining, amount outstanding, residual balance, ending balance, closing balance, balance to be paid, balance on account
+lp_name:
+- Customer Name, Investor Name, Limited Partner, LP Name, LP, Investor, Partner Name, Subscriber Name, Account Holder, Client Name, Beneficiary Name, Holder Name, Shareholder Name, Owner Name
 currency:
-- "$" → "USD"
+- "$" → "USD" or "CAD" (choose based on context)
 - "£" → "GBP"
 - "€" → "EUR"
 
-### Important Instructions:
-- Use financial logic, context, and proximity to match values with their labels, even if labels differ.
-- Extract even when labels are missing — rely on financial and temporal cues.
-- Do not extract irrelevant or cumulative values (e.g., total to date, historical data, or fees).
-- If a KPI cannot be reliably extracted, return it as null.
-- All numeric values must be normalized as float with dot decimal notation.
-- All dates must be returned inYYYY-MM-DD format.
-- Every JSOn response that should be english language only
-- Only output a valid, minified JSON object without explanations or commentary.
+## Extraction Rules:
+- Use context and proximity to match values to labels.
+- Normalize all numbers as floats (dot decimal).
+- All dates must be in YYYY-MM-DD format.
+- If a date is ambiguous, prefer those near capital amounts or phrases like "Drawdown", "Call", or "Notice".
+- Use temporal order: commitment_date < effective_date.
+- If a date lacks a clear label, infer from its position relative to capital call text.
 
-### Date Disambiguation Rules:
-- Prefer dates near capital amounts or phrases like "Drawdown", "Call", or "Notice".
-- Use temporal order: commitment_date < effective_date
-- If a date lacks a clear label, infer from its position relative to the capital call text.
+## Language & Output:
+- All output must be in English and valid JSON.
+- Never include explanations, formatting, or extra text—**only** the JSON object.
+- If the user requests specific data, return only that data.
 
-### Additional Language Handling:
-- If the uploaded PDF is in Spanish, automatically translate the document into English.
-- Extract relevant financial data from the translated English version.
-- Ensure accuracy by using financial logic, context, and proximity rules post-translation.
-- Maintain the output format strictly in JSON, as defined earlier.
-- Every response that should be english language only
-
-### Output Format:
-- If the user requests a specific list of data, only return that data.
-- Return JSON response that should be english language only
-- Return should only the user expected data only no extra data it ivoltes the user data
-- Response must be a valid JSON object with no extra text.
-- Every Response should be in the JSON format only
 {text}
 """
+# ...existing code...
 
 def extract_text_with_coords_from_pdf(pdf_path):
     """
@@ -412,7 +422,7 @@ def highlight_pdf(original_pdf_path, extracted_data):
     # Generate a unique ID for the highlighted PDF
     unique_id = str(uuid.uuid4())
     highlighted_pdf_filename = f"highlighted_{unique_id}.pdf"
-    output_pdf_path = os.path.join(tempfile.gettempdir(), highlighted_pdf_filename)
+    output_pdf_path = os.path.join(PDF_STORAGE_DIR, highlighted_pdf_filename) # Store in dedicated directory
 
     highlight_color = (1, 1, 0)  # Yellow color (RGB values from 0 to 1)
 
@@ -438,7 +448,7 @@ def highlight_pdf(original_pdf_path, extracted_data):
 
 @app.route('/upload', methods=['POST'])
 def upload_ollama():
-    userInputPrompt = request.values['userinput']
+    userInputPrompt = request.values.get('userinput') # Use .get for safety
     if 'file' not in request.files:
         return jsonify({'error': 'No file part'}), 400
 
@@ -450,15 +460,18 @@ def upload_ollama():
     if file_ext.lower() not in ['.pdf']:
         return jsonify({'error': 'Only PDF files are supported for highlighting.'}), 400
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        original_file_path = os.path.join(tmpdir, file.filename)
-        file.save(original_file_path)
+    # Create a temporary file to save the uploaded PDF
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+        file.save(tmp_file.name)
+        original_file_path = tmp_file.name
 
-        try:
-            text_coords, extracted_text_for_llm = extract_text_with_coords_from_pdf(original_file_path)
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
+    try:
+        text_coords, extracted_text_for_llm = extract_text_with_coords_from_pdf(original_file_path)
+    except Exception as e:
+        os.unlink(original_file_path) # Clean up temp file
+        return jsonify({'error': str(e)}), 500
 
+    try:
         prompt = ChatPromptTemplate.from_template(prompt_template + userInputPrompt)
         langchain_chain = prompt | model_ollama
         llm_raw_result = langchain_chain.invoke({"text": extracted_text_for_llm})
@@ -470,9 +483,7 @@ def upload_ollama():
 
         try:
             # Get the unique filename and its temporary path
-            highlighted_filename, highlighted_temp_path = highlight_pdf(original_file_path, llm_json_result)
-            # Store the path in our global dictionary
-            HIGHLIGHTED_PDF_STORAGE[highlighted_filename] = highlighted_temp_path
+            highlighted_filename, highlighted_absolute_path = highlight_pdf(original_file_path, llm_json_result)
 
             # Return both the JSON result and the download URL for the PDF
             return jsonify({
@@ -480,12 +491,16 @@ def upload_ollama():
                 "highlighted_pdf_url": f"/download_pdf/{highlighted_filename}"
             })
         except Exception as e:
+            print(f"Error highlighting PDF: {str(e)}")
             return jsonify({'error': f"Error highlighting PDF: {str(e)}", 'llm_result': llm_json_result}), 500
 
-@app.route('/upload_gemini', methods=['POST'])
-def upload_gemini():
-    userInputPrompt = request.values['userinput']
-    print(f"Print the User Input for Ollama Model",{userInputPrompt})
+    finally:
+        os.unlink(original_file_path) # Ensure temporary file is cleaned up
+
+# @app.route('/upload_gemini', methods=['POST'])
+# def upload_gemini():
+    userInputPrompt = request.values.get('userinput')
+    print(f"User Input for Gemini Model: {userInputPrompt}")
     if 'file' not in request.files:
         return jsonify({'error': 'No file part'}), 400
 
@@ -497,50 +512,65 @@ def upload_gemini():
     if file_ext.lower() not in ['.pdf']:
         return jsonify({'error': 'Only PDF files are supported for highlighting.'}), 400
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        original_file_path = os.path.join(tmpdir, file.filename)
-        file.save(original_file_path)
+    # Create a temporary file to save the uploaded PDF
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+        file.save(tmp_file.name)
+        original_file_path = tmp_file.name
 
-        try:
-            text_coords, extracted_text_for_llm = extract_text_with_coords_from_pdf(original_file_path)
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
+    try:
+        text_coords, extracted_text_for_llm = extract_text_with_coords_from_pdf(original_file_path)
+    except Exception as e:
+        os.unlink(original_file_path) # Clean up temp file
+        return jsonify({'error': str(e)}), 500
 
-        try:
-            full_prompt = prompt_template.format(text=extracted_text_for_llm) + userInputPrompt
-            response = model_gemini.generate_content(full_prompt)
-            llm_raw_result = response.text
-            llm_json_result = json.loads(llm_raw_result)
-        except json.JSONDecodeError as e:
-            return jsonify({'error': f"LLM output is not valid JSON: {e}", 'raw_output': llm_raw_result}), 500
-        except Exception as e:
-            return jsonify({'error': f"Error with Gemini model: {str(e)}"}), 500
+    try:
+        full_prompt = prompt_template.format(text=extracted_text_for_llm) + userInputPrompt
+        response = model_gemini.generate_content(full_prompt)
+        llm_raw_result = response.text
+        llm_json_result = json.loads(llm_raw_result)
+    except json.JSONDecodeError as e:
+        return jsonify({'error': f"LLM output is not valid JSON: {e}", 'raw_output': llm_raw_result}), 500
+    except Exception as e:
+        return jsonify({'error': f"Error with Gemini model: {str(e)}"}), 500
 
-        try:
-            highlighted_filename, highlighted_temp_path = highlight_pdf(original_file_path, llm_json_result)
-            HIGHLIGHTED_PDF_STORAGE[highlighted_filename] = highlighted_temp_path
-            print(llm_json_result,highlighted_filename)
-            return jsonify({
-                "result": llm_json_result,
-                "highlighted_pdf_url": f"/download_pdf/{highlighted_filename}"
-            })
-        except Exception as e:
-            return jsonify({'error': f"Error highlighting PDF: {str(e)}", 'llm_result': llm_json_result}), 500
+    try:
+        highlighted_filename, highlighted_absolute_path = highlight_pdf(original_file_path, llm_json_result)
+        print(llm_json_result, highlighted_filename)
+        return jsonify({
+            "result": llm_json_result,
+            "highlighted_pdf_url": f"/download_pdf/{highlighted_filename}"
+        })
+    except Exception as e:
+        return jsonify({'error': f"Error highlighting PDF: {str(e)}", 'llm_result': llm_json_result}), 500
+    finally:
+        os.unlink(original_file_path) # Ensure temporary file is cleaned up
+
 
 @app.route('/download_pdf/<filename>', methods=['GET'])
 def download_pdf(filename):
-    """Serves a highlighted PDF based on its unique filename."""
-    pdf_path = HIGHLIGHTED_PDF_STORAGE.get(filename)
-    if pdf_path and os.path.exists(pdf_path):
-        # We need to remove the file after sending it, or manage cleanup periodically
-        # For simplicity, let's keep it for now. In production, use a background task to clean up.
-        return send_file(pdf_path, mimetype='application/pdf', as_attachment=True, download_name=filename)
-    else:
+    """
+    Serves a highlighted PDF based on its unique filename.
+    Supports both preview (inline) and download (attachment) via a query parameter.
+    """
+    pdf_path = os.path.join(PDF_STORAGE_DIR, filename)
+
+    if not os.path.exists(pdf_path):
         return jsonify({'error': 'PDF not found or has expired.'}), 404
 
-@app.route('/')
-def home():
-    return "Upload endpoints are ready at /upload_ollama and /upload_gemini"
+    # Determine if the request is for preview or download
+    # Default to inline (preview) if 'download' is not in query args
+    as_attachment = request.args.get('download', 'false').lower() == 'true'
+
+    response = send_file(pdf_path, mimetype='application/pdf', as_attachment=as_attachment, download_name=filename)
+
+    # For inline display (preview), set Content-Disposition
+    if not as_attachment:
+        response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
+
+    # Consider adding a mechanism to clean up old files in PDF_STORAGE_DIR
+    # This example leaves them for simplicity. In a real application, you'd want
+    # a cron job or a background thread to periodically clear old files.
+    return response
 
 if __name__ == '__main__':
     app.run(debug=True)
