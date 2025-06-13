@@ -284,7 +284,298 @@
 #     app.run(debug=True)
 
 
-from flask import Flask, request, jsonify, send_file, make_response
+# from flask import Flask, request, jsonify, send_file, make_response
+# from flask_cors import CORS
+# from langchain_ollama import OllamaLLM
+# from langchain.prompts import ChatPromptTemplate
+# import pytesseract
+# from pdf2image import convert_from_path
+# from PIL import Image
+# import tempfile
+# import os
+# import google.generativeai as genai
+# import json
+# import fitz # PyMuPDF
+# import uuid # For generating unique filenames
+# import shutil # For safely handling directories
+
+# app = Flask(__name__)
+# CORS(app, origins=["http://localhost:3000"])
+
+# # Configure paths
+# pytesseract.pytesseract.tesseract_cmd = r'D:\MSCI\OCR\tesseract\tesseract.exe'
+# poppler_path = r'D:\MSCI\OCR\poppler-24.08.0\Library\bin'
+
+# # Initialize LLM models (as before)
+# model_ollama = OllamaLLM(model="llama3:latest")
+# genai.configure(api_key="YOUR_GEMINI_API_KEY") # Replace with your actual Gemini API key
+# model_gemini = genai.GenerativeModel('gemini-1.5-flash')
+
+# # Directory to store highlighted PDFs
+# # It's better to manage a dedicated temporary directory for PDFs
+# PDF_STORAGE_DIR = os.path.join(tempfile.gettempdir(), 'highlighted_pdfs')
+# os.makedirs(PDF_STORAGE_DIR, exist_ok=True)
+
+# # Prompt template (unchanged)
+# # ...existing code...
+# prompt_template = """
+# You are a financial document analysis AI.
+
+# ## Objective:
+# Extract only the key financial KPIs from a Capital Call Statement, strictly following the user's request. Always return results in English, as a valid JSON object, with no extra text or explanation.
+
+# ## Extraction Protocol:
+# - If the user's prompt specifies fields, return **only** those fields.
+# - If the user's prompt is empty, return the default JSON template below.
+# - Use financial logic, context, and proximity to match values, even if labels differ or are missing.
+# - Ignore irrelevant, cumulative, or historical values (e.g., fees, totals to date).
+# - If a value cannot be reliably extracted, return it as null.
+
+# ## Multilingual Handling:
+# - If the uploaded document is in Spanish, French, or any other language, **automatically translate** all content to English before extraction.
+# - Ensure all extracted values are accurate and contextually correct after translation.
+# - Output must always be in English, regardless of input language.
+
+# ## Output Format:
+# - Return **only** a valid, minified JSON object with no extra text.
+# - If the user's prompt is empty, use this template:
+# {{
+#   "commitment_date": "YYYY-MM-DD or null",
+#   "effective_date": "YYYY-MM-DD or null",
+#   "lp_name": "string or null",
+#   "fund_name": "string or null",
+#   "capital_call_amount": float or null,
+#   "currency": "USD/GBP/EUR/CAD or null"
+# }}
+
+# ## Phrase Mappings:
+# commitment_date:
+# - Commitment Date, Date of Commitment, Subscription Date, Closing Date, Commitment Effective Date, Investor Commitment Date, Date Committed, Commitment Execution Date, Date of Subscription, Date of Agreement, Date of Acceptance, Date of Signature, Date Signed, Date of Participation, Date of Entry, Date of Joining, Date of Investment, Date of Initial Commitment
+# effective_date:
+# - Effective Date, Capital Call Date, Drawdown Date, Notice Date, Issuance Date, Date of Call, Call Date, Payment Due Date, Date Payable, Date of Drawdown, Date of Notice, Date of Issuance, Date of Payment, Date Due, Due Date, Date Funds Due, Date of Capital Call, Date of Request, Date of Remittance, Remittance Date
+# capital_call_amount:
+# - Capital Call Amount, Total Amount, Drawdown Amount, Amount Called, Amount Due, Capital Requested, Capital Contribution, Amount Payable, This Call Amount, Current Call Amount, Amount to be Paid, Payment Amount, Amount Required, Amount Requested, Subscription Amount, Payable Amount, Amount Owed, Amount to Remit, Remittance Amount, Amount to be Contributed, Amount for this Call, Amount Payable on Notice, Amount to be Drawn, Amount to be Settled
+# balance_amount:
+# - Deposit balance remaining, balance, remaining balance, outstanding balance, available balance, balance due, uncalled balance, undrawn balance, unpaid balance, amount remaining, amount outstanding, residual balance, ending balance, closing balance, balance to be paid, balance on account
+# lp_name:
+# - Customer Name, Investor Name, Limited Partner, LP Name, LP, Investor, Partner Name, Subscriber Name, Account Holder, Client Name, Beneficiary Name, Holder Name, Shareholder Name, Owner Name
+# currency:
+# - "$" → "USD" or "CAD" (choose based on context)
+# - "£" → "GBP"
+# - "€" → "EUR"
+
+# ## Extraction Rules:
+# - Use context and proximity to match values to labels.
+# - Normalize all numbers as floats (dot decimal).
+# - All dates must be in YYYY-MM-DD format.
+# - If a date is ambiguous, prefer those near capital amounts or phrases like "Drawdown", "Call", or "Notice".
+# - Use temporal order: commitment_date < effective_date.
+# - If a date lacks a clear label, infer from its position relative to capital call text.
+
+# ## Language & Output:
+# - All output must be in English and valid JSON.
+# - Never include explanations, formatting, or extra text—**only** the JSON object.
+# - If the user requests specific data, return only that data.
+
+# {text}
+# """
+# # ...existing code...
+
+# def extract_text_with_coords_from_pdf(pdf_path):
+#     """
+#     Extracts text and bounding box coordinates from a PDF using Tesseract.
+#     Returns a list of dictionaries, each containing 'text', 'left', 'top', 'width', 'height', 'page_num'.
+#     """
+#     all_text_data = []
+#     text_content_for_llm = []
+
+#     pages = convert_from_path(pdf_path, dpi=300, poppler_path=poppler_path)
+
+#     for i, page in enumerate(pages):
+#         page_num = i + 1
+#         data = pytesseract.image_to_data(page, output_type=pytesseract.Output.DICT)
+
+#         page_text = []
+#         for j in range(len(data['text'])):
+#             text = data['text'][j].strip()
+#             if text:
+#                 word_info = {
+#                     'text': text,
+#                     'left': data['left'][j],
+#                     'top': data['top'][j],
+#                     'width': data['width'][j],
+#                     'height': data['height'][j],
+#                     'page_num': page_num
+#                 }
+#                 all_text_data.append(word_info)
+#                 page_text.append(text)
+#         text_content_for_llm.append(f"\n--- Page {page_num} ---\n{' '.join(page_text)}")
+
+#     return all_text_data, "\n".join(text_content_for_llm)
+
+# def highlight_pdf(original_pdf_path, extracted_data):
+#     """
+#     Highlights the extracted data in the PDF using PyMuPDF.
+#     `extracted_data` is the JSON object from the LLM.
+#     """
+#     doc = fitz.open(original_pdf_path)
+#     # Generate a unique ID for the highlighted PDF
+#     unique_id = str(uuid.uuid4())
+#     highlighted_pdf_filename = f"highlighted_{unique_id}.pdf"
+#     output_pdf_path = os.path.join(PDF_STORAGE_DIR, highlighted_pdf_filename) # Store in dedicated directory
+
+#     highlight_color = (1, 1, 0)  # Yellow color (RGB values from 0 to 1)
+
+#     for key, value in extracted_data.items():
+#         if value is None or value == "No data found.":
+#             continue
+
+#         search_value = str(value)
+
+#         for page_num in range(doc.page_count):
+#             page = doc[page_num]
+#             text_instances = page.search_for(search_value, quads=True)
+
+#             for inst in text_instances:
+#                 rect = inst.rect
+#                 highlight = page.add_highlight_annot(rect)
+#                 highlight.set_colors(stroke=highlight_color)
+#                 highlight.update()
+
+#     doc.save(output_pdf_path)
+#     doc.close()
+#     return highlighted_pdf_filename, output_pdf_path
+
+# @app.route('/upload', methods=['POST'])
+# def upload_ollama():
+#     userInputPrompt = request.values.get('userinput') # Use .get for safety
+#     if 'file' not in request.files:
+#         return jsonify({'error': 'No file part'}), 400
+
+#     file = request.files['file']
+#     if file.filename == '':
+#         return jsonify({'error': 'No selected file'}), 400
+
+#     file_ext = os.path.splitext(file.filename)[1]
+#     if file_ext.lower() not in ['.pdf']:
+#         return jsonify({'error': 'Only PDF files are supported for highlighting.'}), 400
+
+#     # Create a temporary file to save the uploaded PDF
+#     with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+#         file.save(tmp_file.name)
+#         original_file_path = tmp_file.name
+
+#     try:
+#         text_coords, extracted_text_for_llm = extract_text_with_coords_from_pdf(original_file_path)
+#     except Exception as e:
+#         os.unlink(original_file_path) # Clean up temp file
+#         return jsonify({'error': str(e)}), 500
+
+#     try:
+#         prompt = ChatPromptTemplate.from_template(prompt_template + userInputPrompt)
+#         langchain_chain = prompt | model_ollama
+#         llm_raw_result = langchain_chain.invoke({"text": extracted_text_for_llm})
+
+#         try:
+#             llm_json_result = json.loads(llm_raw_result)
+#         except json.JSONDecodeError as e:
+#             return jsonify({'error': f"LLM output is not valid JSON: {e}", 'raw_output': llm_raw_result}), 500
+
+#         try:
+#             # Get the unique filename and its temporary path
+#             highlighted_filename, highlighted_absolute_path = highlight_pdf(original_file_path, llm_json_result)
+
+#             # Return both the JSON result and the download URL for the PDF
+#             return jsonify({
+#                 "result": llm_json_result,
+#                 "highlighted_pdf_url": f"/download_pdf/{highlighted_filename}"
+#             })
+#         except Exception as e:
+#             print(f"Error highlighting PDF: {str(e)}")
+#             return jsonify({'error': f"Error highlighting PDF: {str(e)}", 'llm_result': llm_json_result}), 500
+
+#     finally:
+#         os.unlink(original_file_path) # Ensure temporary file is cleaned up
+
+# # @app.route('/upload_gemini', methods=['POST'])
+# # def upload_gemini():
+#     userInputPrompt = request.values.get('userinput')
+#     print(f"User Input for Gemini Model: {userInputPrompt}")
+#     if 'file' not in request.files:
+#         return jsonify({'error': 'No file part'}), 400
+
+#     file = request.files['file']
+#     if file.filename == '':
+#         return jsonify({'error': 'No selected file'}), 400
+
+#     file_ext = os.path.splitext(file.filename)[1]
+#     if file_ext.lower() not in ['.pdf']:
+#         return jsonify({'error': 'Only PDF files are supported for highlighting.'}), 400
+
+#     # Create a temporary file to save the uploaded PDF
+#     with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+#         file.save(tmp_file.name)
+#         original_file_path = tmp_file.name
+
+#     try:
+#         text_coords, extracted_text_for_llm = extract_text_with_coords_from_pdf(original_file_path)
+#     except Exception as e:
+#         os.unlink(original_file_path) # Clean up temp file
+#         return jsonify({'error': str(e)}), 500
+
+#     try:
+#         full_prompt = prompt_template.format(text=extracted_text_for_llm) + userInputPrompt
+#         response = model_gemini.generate_content(full_prompt)
+#         llm_raw_result = response.text
+#         llm_json_result = json.loads(llm_raw_result)
+#     except json.JSONDecodeError as e:
+#         return jsonify({'error': f"LLM output is not valid JSON: {e}", 'raw_output': llm_raw_result}), 500
+#     except Exception as e:
+#         return jsonify({'error': f"Error with Gemini model: {str(e)}"}), 500
+
+#     try:
+#         highlighted_filename, highlighted_absolute_path = highlight_pdf(original_file_path, llm_json_result)
+#         print(llm_json_result, highlighted_filename)
+#         return jsonify({
+#             "result": llm_json_result,
+#             "highlighted_pdf_url": f"/download_pdf/{highlighted_filename}"
+#         })
+#     except Exception as e:
+#         return jsonify({'error': f"Error highlighting PDF: {str(e)}", 'llm_result': llm_json_result}), 500
+#     finally:
+#         os.unlink(original_file_path) # Ensure temporary file is cleaned up
+
+
+# @app.route('/download_pdf/<filename>', methods=['GET'])
+# def download_pdf(filename):
+#     """
+#     Serves a highlighted PDF based on its unique filename.
+#     Supports both preview (inline) and download (attachment) via a query parameter.
+#     """
+#     pdf_path = os.path.join(PDF_STORAGE_DIR, filename)
+
+#     if not os.path.exists(pdf_path):
+#         return jsonify({'error': 'PDF not found or has expired.'}), 404
+
+#     # Determine if the request is for preview or download
+#     # Default to inline (preview) if 'download' is not in query args
+#     as_attachment = request.args.get('download', 'false').lower() == 'true'
+
+#     response = send_file(pdf_path, mimetype='application/pdf', as_attachment=as_attachment, download_name=filename)
+
+#     # For inline display (preview), set Content-Disposition
+#     if not as_attachment:
+#         response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
+
+#     # Consider adding a mechanism to clean up old files in PDF_STORAGE_DIR
+#     # This example leaves them for simplicity. In a real application, you'd want
+#     # a cron job or a background thread to periodically clear old files.
+#     return response
+
+# if __name__ == '__main__':
+#     app.run(debug=True)
+
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from langchain_ollama import OllamaLLM
 from langchain.prompts import ChatPromptTemplate
@@ -302,22 +593,41 @@ import shutil # For safely handling directories
 app = Flask(__name__)
 CORS(app, origins=["http://localhost:3000"])
 
-# Configure paths
-pytesseract.pytesseract.tesseract_cmd = r'D:\MSCI\OCR\tesseract\tesseract.exe'
+# Configure paths for Tesseract and Poppler
+# IMPORTANT: Update these paths to match your system's installation
+try:
+    pytesseract.pytesseract.tesseract_cmd = r'D:\MSCI\OCR\tesseract\tesseract.exe'
+except pytesseract.TesseractNotFoundError:
+    print("Tesseract is not found. Please install it and update 'pytesseract.pytesseract.tesseract_cmd'.")
+    # In a production environment, you might want to raise an error or exit here.
+
 poppler_path = r'D:\MSCI\OCR\poppler-24.08.0\Library\bin'
+if not os.path.exists(poppler_path):
+    print(f"Poppler path not found: {poppler_path}. PDF conversion might fail.")
+    # Consider adding an error handling or exit if Poppler is crucial.
 
-# Initialize LLM models (as before)
-model_ollama = OllamaLLM(model="llama3:latest")
-genai.configure(api_key="YOUR_GEMINI_API_KEY") # Replace with your actual Gemini API key
-model_gemini = genai.GenerativeModel('gemini-1.5-flash')
+# Initialize LLM models
+model_ollama = None
+model_gemini = None
 
-# Directory to store highlighted PDFs
-# It's better to manage a dedicated temporary directory for PDFs
+try:
+    model_ollama = OllamaLLM(model="llama3:latest")
+except Exception as e:
+    print(f"Failed to initialize OllamaLLM: {e}. Ensure Ollama is running and 'llama3:latest' model is pulled.")
+
+try:
+    # Replace with your actual Gemini API key
+    genai.configure(api_key="YOUR_GEMINI_API_KEY")
+    model_gemini = genai.GenerativeModel('gemini-1.5-flash')
+except Exception as e:
+    print(f"Failed to configure Gemini API or initialize model: {e}. Check your API key and network.")
+
+# Directory to store highlighted PDFs temporarily
 PDF_STORAGE_DIR = os.path.join(tempfile.gettempdir(), 'highlighted_pdfs')
 os.makedirs(PDF_STORAGE_DIR, exist_ok=True)
 
-# Prompt template (unchanged)
-# ...existing code...
+# Prompt template for LLMs
+# Escaped curly braces in the JSON example with double curly braces
 prompt_template = """
 You are a financial document analysis AI.
 
@@ -339,14 +649,13 @@ Extract only the key financial KPIs from a Capital Call Statement, strictly foll
 ## Output Format:
 - Return **only** a valid, minified JSON object with no extra text.
 - If the user's prompt is empty, use this template:
-{{
-  "commitment_date": "YYYY-MM-DD or null",
-  "effective_date": "YYYY-MM-DD or null",
-  "lp_name": "string or null",
-  "fund_name": "string or null",
-  "capital_call_amount": float or null,
+{{{{
+  "Commitment Date": "YYYY-MM-DD or null",
+  "LP Name": "string or null",
+  "Fund Name": "string or null",
+  "capital call amount": float or null,
   "currency": "USD/GBP/EUR/CAD or null"
-}}
+}}}}
 
 ## Phrase Mappings:
 commitment_date:
@@ -367,7 +676,7 @@ currency:
 ## Extraction Rules:
 - Use context and proximity to match values to labels.
 - Normalize all numbers as floats (dot decimal).
-- All dates must be in YYYY-MM-DD format.
+- All dates must be in McClellan-MM-DD format.
 - If a date is ambiguous, prefer those near capital amounts or phrases like "Drawdown", "Call", or "Notice".
 - Use temporal order: commitment_date < effective_date.
 - If a date lacks a clear label, infer from its position relative to capital call text.
@@ -379,23 +688,26 @@ currency:
 
 {text}
 """
-# ...existing code...
 
 def extract_text_with_coords_from_pdf(pdf_path):
     """
     Extracts text and bounding box coordinates from a PDF using Tesseract.
-    Returns a list of dictionaries, each containing 'text', 'left', 'top', 'width', 'height', 'page_num'.
+    Returns a list of dictionaries, each containing 'text', 'left', 'top', 'width', 'height', 'page_num',
+    and a string of all extracted text for LLM processing.
     """
     all_text_data = []
     text_content_for_llm = []
 
-    pages = convert_from_path(pdf_path, dpi=300, poppler_path=poppler_path)
+    try:
+        pages = convert_from_path(pdf_path, dpi=300, poppler_path=poppler_path)
+    except Exception as e:
+        raise RuntimeError(f"Poppler error during PDF conversion. Check poppler_path and installation: {e}")
 
     for i, page in enumerate(pages):
         page_num = i + 1
         data = pytesseract.image_to_data(page, output_type=pytesseract.Output.DICT)
 
-        page_text = []
+        page_text_words = []
         for j in range(len(data['text'])):
             text = data['text'][j].strip()
             if text:
@@ -408,8 +720,8 @@ def extract_text_with_coords_from_pdf(pdf_path):
                     'page_num': page_num
                 }
                 all_text_data.append(word_info)
-                page_text.append(text)
-        text_content_for_llm.append(f"\n--- Page {page_num} ---\n{' '.join(page_text)}")
+                page_text_words.append(text)
+        text_content_for_llm.append(f"\n--- Page {page_num} ---\n{' '.join(page_text_words)}")
 
     return all_text_data, "\n".join(text_content_for_llm)
 
@@ -419,25 +731,25 @@ def highlight_pdf(original_pdf_path, extracted_data):
     `extracted_data` is the JSON object from the LLM.
     """
     doc = fitz.open(original_pdf_path)
-    # Generate a unique ID for the highlighted PDF
     unique_id = str(uuid.uuid4())
     highlighted_pdf_filename = f"highlighted_{unique_id}.pdf"
-    output_pdf_path = os.path.join(PDF_STORAGE_DIR, highlighted_pdf_filename) # Store in dedicated directory
+    output_pdf_path = os.path.join(PDF_STORAGE_DIR, highlighted_pdf_filename)
 
     highlight_color = (1, 1, 0)  # Yellow color (RGB values from 0 to 1)
 
     for key, value in extracted_data.items():
-        if value is None or value == "No data found.":
+        if value is None or (isinstance(value, str) and value.lower() == "no data found."):
             continue
 
         search_value = str(value)
 
         for page_num in range(doc.page_count):
             page = doc[page_num]
+            # PyMuPDF's search_for returns a list of Rect objects for found instances
             text_instances = page.search_for(search_value, quads=True)
 
             for inst in text_instances:
-                rect = inst.rect
+                rect = inst.rect # Get the bounding box as a Rect object
                 highlight = page.add_highlight_annot(rect)
                 highlight.set_colors(stroke=highlight_color)
                 highlight.update()
@@ -446,105 +758,86 @@ def highlight_pdf(original_pdf_path, extracted_data):
     doc.close()
     return highlighted_pdf_filename, output_pdf_path
 
-@app.route('/upload', methods=['POST'])
-def upload_ollama():
-    userInputPrompt = request.values.get('userinput') # Use .get for safety
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file part'}), 400
-
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': 'No selected file'}), 400
-
+def process_pdf_with_llm(file, llm_model_name, user_input_prompt):
+    """
+    A helper function to handle the common logic for both Ollama and Gemini uploads.
+    """
     file_ext = os.path.splitext(file.filename)[1]
     if file_ext.lower() not in ['.pdf']:
         return jsonify({'error': 'Only PDF files are supported for highlighting.'}), 400
 
-    # Create a temporary file to save the uploaded PDF
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-        file.save(tmp_file.name)
-        original_file_path = tmp_file.name
-
+    original_file_path = None # Initialize to None
     try:
+        # Create a temporary file to save the uploaded PDF
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+            file.save(tmp_file.name)
+            original_file_path = tmp_file.name # Store the path
+
+        # --- OCR and LLM Processing ---
         text_coords, extracted_text_for_llm = extract_text_with_coords_from_pdf(original_file_path)
-    except Exception as e:
-        os.unlink(original_file_path) # Clean up temp file
-        return jsonify({'error': str(e)}), 500
 
-    try:
-        prompt = ChatPromptTemplate.from_template(prompt_template + userInputPrompt)
-        langchain_chain = prompt | model_ollama
-        llm_raw_result = langchain_chain.invoke({"text": extracted_text_for_llm})
+        # Prepare the prompt for the LLM
+        full_prompt_for_llm = prompt_template + user_input_prompt
 
-        try:
-            llm_json_result = json.loads(llm_raw_result)
-        except json.JSONDecodeError as e:
-            return jsonify({'error': f"LLM output is not valid JSON: {e}", 'raw_output': llm_raw_result}), 500
+        llm_raw_result = "" # Initialize raw result
+        if llm_model_name == "ollama":
+            if model_ollama is None:
+                raise RuntimeError('Ollama model not initialized. Check server logs.')
+            llm_prompt_template_obj = ChatPromptTemplate.from_template(full_prompt_for_llm)
+            llm_raw_result = (llm_prompt_template_obj | model_ollama).invoke({"text": extracted_text_for_llm})
+        elif llm_model_name == "gemini":
+            if model_gemini is None:
+                raise RuntimeError('Gemini model not initialized. Check API key and network.')
+            # For Gemini, format the prompt string directly before passing to generate_content
+            full_prompt_content_for_gemini = prompt_template.format(text=extracted_text_for_llm) + user_input_prompt
+            response = model_gemini.generate_content(full_prompt_content_for_gemini)
+            llm_raw_result = response.text
+        else:
+            raise ValueError('Invalid LLM model specified.')
 
-        try:
-            # Get the unique filename and its temporary path
-            highlighted_filename, highlighted_absolute_path = highlight_pdf(original_file_path, llm_json_result)
-
-            # Return both the JSON result and the download URL for the PDF
-            return jsonify({
-                "result": llm_json_result,
-                "highlighted_pdf_url": f"/download_pdf/{highlighted_filename}"
-            })
-        except Exception as e:
-            print(f"Error highlighting PDF: {str(e)}")
-            return jsonify({'error': f"Error highlighting PDF: {str(e)}", 'llm_result': llm_json_result}), 500
-
-    finally:
-        os.unlink(original_file_path) # Ensure temporary file is cleaned up
-
-# @app.route('/upload_gemini', methods=['POST'])
-# def upload_gemini():
-    userInputPrompt = request.values.get('userinput')
-    print(f"User Input for Gemini Model: {userInputPrompt}")
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file part'}), 400
-
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': 'No selected file'}), 400
-
-    file_ext = os.path.splitext(file.filename)[1]
-    if file_ext.lower() not in ['.pdf']:
-        return jsonify({'error': 'Only PDF files are supported for highlighting.'}), 400
-
-    # Create a temporary file to save the uploaded PDF
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-        file.save(tmp_file.name)
-        original_file_path = tmp_file.name
-
-    try:
-        text_coords, extracted_text_for_llm = extract_text_with_coords_from_pdf(original_file_path)
-    except Exception as e:
-        os.unlink(original_file_path) # Clean up temp file
-        return jsonify({'error': str(e)}), 500
-
-    try:
-        full_prompt = prompt_template.format(text=extracted_text_for_llm) + userInputPrompt
-        response = model_gemini.generate_content(full_prompt)
-        llm_raw_result = response.text
         llm_json_result = json.loads(llm_raw_result)
-    except json.JSONDecodeError as e:
-        return jsonify({'error': f"LLM output is not valid JSON: {e}", 'raw_output': llm_raw_result}), 500
-    except Exception as e:
-        return jsonify({'error': f"Error with Gemini model: {str(e)}"}), 500
 
-    try:
+        # --- PDF Highlighting ---
         highlighted_filename, highlighted_absolute_path = highlight_pdf(original_file_path, llm_json_result)
-        print(llm_json_result, highlighted_filename)
+
+        # --- Final Response ---
         return jsonify({
             "result": llm_json_result,
             "highlighted_pdf_url": f"/download_pdf/{highlighted_filename}"
         })
-    except Exception as e:
-        return jsonify({'error': f"Error highlighting PDF: {str(e)}", 'llm_result': llm_json_result}), 500
-    finally:
-        os.unlink(original_file_path) # Ensure temporary file is cleaned up
 
+    except json.JSONDecodeError as e:
+        print(f"LLM output is not valid JSON:\n{llm_raw_result}\nError: {e}")
+        return jsonify({'error': f"LLM output is not valid JSON. Please refine prompt or check LLM response format: {e}", 'raw_output': llm_raw_result}), 500
+    except Exception as e:
+        print(f"Error during PDF processing or LLM invocation: {str(e)}")
+        # Return a generic error if any other exception occurs
+        return jsonify({'error': f"An unexpected error occurred: {str(e)}"}), 500
+    finally:
+        # Ensure the original temporary file is cleaned up after all operations
+        if original_file_path and os.path.exists(original_file_path):
+            os.unlink(original_file_path)
+
+
+@app.route('/upload_ollama', methods=['POST'])
+def upload_ollama_route():
+    userInputPrompt = request.values.get('userinput', '')
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+    return process_pdf_with_llm(file, "ollama", userInputPrompt)
+
+@app.route('/upload_gemini', methods=['POST'])
+def upload_gemini_route():
+    userInputPrompt = request.values.get('userinput', '')
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+    return process_pdf_with_llm(file, "gemini", userInputPrompt)
 
 @app.route('/download_pdf/<filename>', methods=['GET'])
 def download_pdf(filename):
@@ -558,19 +851,13 @@ def download_pdf(filename):
         return jsonify({'error': 'PDF not found or has expired.'}), 404
 
     # Determine if the request is for preview or download
-    # Default to inline (preview) if 'download' is not in query args
     as_attachment = request.args.get('download', 'false').lower() == 'true'
 
     response = send_file(pdf_path, mimetype='application/pdf', as_attachment=as_attachment, download_name=filename)
 
-    # For inline display (preview), set Content-Disposition
     if not as_attachment:
         response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
-
-    # Consider adding a mechanism to clean up old files in PDF_STORAGE_DIR
-    # This example leaves them for simplicity. In a real application, you'd want
-    # a cron job or a background thread to periodically clear old files.
     return response
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, port=5000) # Running on port 5000 by default
