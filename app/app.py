@@ -636,7 +636,10 @@ Extract only the key financial KPIs from a Capital Call Statement, strictly foll
 
 ## Extraction Protocol:
 - If the user's prompt specifies fields, return **only** those fields.
+- Please understand the user requested fields and you should return those field to the user only
+- For Instance : The user asks "I need investor id means you should return investor id only should not add any other fields"
 - If the user's prompt is empty, return the default JSON template below.
+- If the user's propt is like a "Extract default capital call attributes"means you should give the default values in the output format to the user.
 - Use financial logic, context, and proximity to match values, even if labels differ or are missing.
 - Ignore irrelevant, cumulative, or historical values (e.g., fees, totals to date).
 - If a value cannot be reliably extracted, return it as null.
@@ -658,15 +661,15 @@ Extract only the key financial KPIs from a Capital Call Statement, strictly foll
 }}}}
 
 ## Phrase Mappings:
-commitment_date:
+commitment date:
 - Commitment Date, Date of Commitment, Subscription Date, Closing Date, Commitment Effective Date, Investor Commitment Date, Date Committed, Commitment Execution Date, Date of Subscription, Date of Agreement, Date of Acceptance, Date of Signature, Date Signed, Date of Participation, Date of Entry, Date of Joining, Date of Investment, Date of Initial Commitment
-effective_date:
+effective date:
 - Effective Date, Capital Call Date, Drawdown Date, Notice Date, Issuance Date, Date of Call, Call Date, Payment Due Date, Date Payable, Date of Drawdown, Date of Notice, Date of Issuance, Date of Payment, Date Due, Due Date, Date Funds Due, Date of Capital Call, Date of Request, Date of Remittance, Remittance Date
-capital_call_amount:
+capital call amount:
 - Capital Call Amount, Total Amount, Drawdown Amount, Amount Called, Amount Due, Capital Requested, Capital Contribution, Amount Payable, This Call Amount, Current Call Amount, Amount to be Paid, Payment Amount, Amount Required, Amount Requested, Subscription Amount, Payable Amount, Amount Owed, Amount to Remit, Remittance Amount, Amount to be Contributed, Amount for this Call, Amount Payable on Notice, Amount to be Drawn, Amount to be Settled
-balance_amount:
+balance amount:
 - Deposit balance remaining, balance, remaining balance, outstanding balance, available balance, balance due, uncalled balance, undrawn balance, unpaid balance, amount remaining, amount outstanding, residual balance, ending balance, closing balance, balance to be paid, balance on account
-lp_name:
+lp name:
 - Customer Name, Investor Name, Limited Partner, LP Name, LP, Investor, Partner Name, Subscriber Name, Account Holder, Client Name, Beneficiary Name, Holder Name, Shareholder Name, Owner Name
 currency:
 - "$" → "USD" or "CAD" (choose based on context)
