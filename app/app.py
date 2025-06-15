@@ -1311,6 +1311,462 @@
 #     app.run(debug=True, port=5000) 
 
 
+# from flask import Flask, request, jsonify, send_file
+# from flask_cors import CORS
+# from langchain_ollama import OllamaLLM
+# from langchain.prompts import ChatPromptTemplate
+# import pytesseract
+# from pdf2image import convert_from_path
+# from PIL import Image
+# import tempfile
+# import os
+# import google.generativeai as genai
+# import json
+# import fitz  # PyMuPDF
+# import uuid  # For generating unique filenames
+# import shutil  # For safely handling directories
+# import difflib  # For fuzzy matching
+
+# app = Flask(__name__)
+# CORS(app, origins=["http://localhost:3000"])
+
+# # Configure paths for Tesseract and Poppler
+# try:
+#     pytesseract.pytesseract.tesseract_cmd = r'D:\MSCI\OCR\tesseract\tesseract.exe'
+# except pytesseract.TesseractNotFoundError:
+#     print("Tesseract is not found. Please install it and update 'pytesseract.pytesseract.tesseract_cmd'.")
+
+# poppler_path = r'D:\MSCI\OCR\poppler-24.08.0\Library\bin'
+# if not os.path.exists(poppler_path):
+#     print(f"Poppler path not found: {poppler_path}. PDF conversion might fail.")
+
+# # Initialize LLM models
+# model_ollama = None
+# model_gemini = None
+
+# try:
+#     model_ollama = OllamaLLM(model="llama3:latest")
+# except Exception as e:
+#     print(f"Failed to initialize OllamaLLM: {e}. Ensure Ollama is running and 'llama3:latest' model is pulled.")
+
+# try:
+#     # Replace with your actual Gemini API key
+#     genai.configure(api_key="YOUR_GEMINI_API_KEY")
+#     model_gemini = genai.GenerativeModel('gemini-1.5-flash')
+# except Exception as e:
+#     print(f"Failed to configure Gemini API or initialize model: {e}. Check your API key and network.")
+
+# # Directory to store highlighted PDFs temporarily
+# PDF_STORAGE_DIR = os.path.join(tempfile.gettempdir(), 'highlighted_pdfs')
+# os.makedirs(PDF_STORAGE_DIR, exist_ok=True)
+
+# # Prompt template for LLMs
+# prompt_template = """
+# You are a financial document analysis AI.
+
+# ## Objective:
+# Extract only the key financial KPIs from a Capital Call Statement, strictly following the user's request. Always return results in English, as a valid JSON object, with no extra text or explanation.
+
+# ## Extraction Protocol:
+# - If the user's prompt specifies fields, return **only** those fields.
+# - Please understand the user requested fields and you should return those field to the user only
+# - For Instance : The user asks "I need investor id means you should return investor id only should not add any other fields"
+# - If the user's prompt is empty, return the default JSON template below.
+# - If the user's propt is like a "Extract default capital call attributes"means you should give the default values in the output format to the user.
+# - Use financial logic, context, and proximity to match values, even if labels differ or are missing.
+# - Ignore irrelevant, cumulative, or historical values (e.g., fees, totals to date).
+# - If a value cannot be reliably extracted, return it as null.
+
+# ## Multilingual Handling:
+# - If the uploaded document is in Spanish, French, or any other language, **automatically translate** all content to English before extraction.
+# - Ensure all extracted values are accurate and contextually correct after translation.
+# - Output must always be in English, regardless of input language.
+
+# ## Output Format:
+# - Return **only** a valid, minified JSON object with no extra text.
+# - If the user's prompt is empty, use this template:
+
+# {{
+#   "Commitment Date": "YYYY-MM-DD or null",
+#   "LP Name": "string or null",
+#   "Fund Name": "string or null",
+#   "Capital Call Amount": float or null,
+#   "Currency": "USD/GBP/EUR/CAD or null"
+# }}
+
+# ## Phrase Mappings:
+# commitment date:
+# - Commitment Date, Date of Commitment, Subscription Date, Closing Date, Commitment Effective Date, Investor Commitment Date, Date Committed, Commitment Execution Date, Date of Subscription, Date of Agreement, Date of Acceptance, Date of Signature, Date Signed, Date of Participation, Date of Entry, Date of Joining, Date of Investment, Date of Initial Commitment
+
+# effective date:
+# - Effective Date, Capital Call Date, Drawdown Date, Notice Date, Issuance Date, Date of Call, Call Date, Payment Due Date, Date Payable, Date of Drawdown, Date of Notice, Date of Issuance, Date of Payment, Date Due, Due Date, Date Funds Due, Date of Capital Call, Date of Request, Date of Remittance, Remittance Date
+
+# capital call amount:
+# - Capital Call Amount, Total Amount, Drawdown Amount, Amount Called, Amount Due, Capital Requested, Capital Contribution, Amount Payable, This Call Amount, Current Call Amount, Amount to be Paid, Payment Amount, Amount Required, Amount Requested, Subscription Amount, Payable Amount, Amount Owed, Amount to Remit, Remittance Amount, Amount to be Contributed, Amount for this Call, Amount Payable on Notice, Amount to be Drawn, Amount to be Settled
+
+# balance amount:
+# - Deposit balance remaining, balance, remaining balance, outstanding balance, available balance, balance due, uncalled balance, undrawn balance, unpaid balance, amount remaining, amount outstanding, residual balance, ending balance, closing balance, balance to be paid, balance on account
+
+# lp name:
+# - Customer Name, Investor Name, Limited Partner, LP Name, LP, Investor, Partner Name, Subscriber Name, Account Holder, Client Name, Beneficiary Name, Holder Name, Shareholder Name, Owner Name
+
+# fund name:
+# - Fund Name, Name of Fund, Fund, Investment Fund, Fund Title, Name of the Fund, Fund Entity, Fund Vehicle, Name of Investment Fund, Name of the Investment Fund, Fund Legal Name, Name of Fund Issuer, Issuer Name, Fund Company, Fund Manager, Name of Fund Manager, Name of Issuer, Name of Fund Company
+
+# currency:
+# - "$" → "USD" or "CAD" (choose based on context)
+# - "£" → "GBP"
+# - "€" → "EUR"
+
+# ## Extraction Rules:
+# - Use context and proximity to match values to labels.
+# - Normalize all numbers as floats (dot decimal).
+# - All dates must be in YYYY-MM-DD format.
+# - If a date is ambiguous, prefer those near capital amounts or phrases like "Drawdown", "Call", or "Notice".
+# - Use temporal order: commitment_date < effective_date.
+# - If a date lacks a clear label, infer from its position relative to capital call text.
+
+# ## Language & Output:
+# - All output must be in English and valid JSON.
+# - Never include explanations, formatting, or extra text—**only** the JSON object.
+# - If the user requests specific data, return only that data.
+
+# {text}
+# """
+
+# # Define default fields and their variations
+# default_fields = {
+#     'Commitment Date': ['commitment date', 'date of commitment', 'subscription date'],
+#     'LP Name': ['lp name', 'investor name', 'limited partner', 'customer name'],
+#     'Fund Name': ['fund name', 'name of fund', 'investment fund'],
+#     'Capital Call Amount': ['capital call amount', 'amount', 'total amount', 'drawdown amount'],
+#     'Currency': ['currency', 'currency type', 'currency code']
+# }
+
+# # Define unique colors for each default field for better identification
+# colors = {
+#     'Commitment Date': (0.0, 0.8, 0.0),      # Green
+#     'LP Name': (0.8, 0.0, 0.8),              # Purple
+#     'Fund Name': (0.0, 0.6, 1.0),            # Blue
+#     'Capital Call Amount': (1.0, 0.6, 0.0),  # Orange
+#     'Currency': (1.0, 0.0, 0.0),             # Red
+#     'user_requested': (0.0, 0.8, 0.0),       # Green (fallback for user-requested)
+#     'default': (0.0, 0.8, 0.0)            # Gray for any other fields
+# }
+
+# def extract_requested_fields(prompt):
+#     """Extract field names from user prompt."""
+#     requested_fields = set()
+#     prompt_lower = prompt.lower()
+#     for field, variations in default_fields.items():
+#         if any(var in prompt_lower for var in variations):
+#             requested_fields.add(field.lower())
+#     return requested_fields
+
+# def extract_text_with_coords_from_pdf(pdf_path):
+#     """
+#     Extracts text and bounding box coordinates from a PDF using Tesseract.
+#     Returns a list of dictionaries, each containing 'text', 'left', 'top', 'width', 'height', 'page_num',
+#     and a string of all extracted text for LLM processing.
+#     """
+#     all_text_data = []
+#     text_content_for_llm = []
+
+#     try:
+#         # Increased DPI for better quality and color accuracy
+#         pages = convert_from_path(
+#             pdf_path,
+#             dpi=600,  # Increased from 300 to 600 for better quality
+#             poppler_path=poppler_path,
+#             use_pdftocairo=True,  # Use pdftocairo for better color handling
+#             grayscale=False,  # Ensure color is preserved
+#             thread_count=4  # Parallel processing for better performance
+#         )
+#     except Exception as e:
+#         raise RuntimeError(f"Poppler error during PDF conversion. Check poppler_path and installation: {e}")
+
+#     for i, page in enumerate(pages):
+#         page_num = i + 1
+        
+#         # Convert to RGB mode to ensure consistent color handling
+#         if page.mode != 'RGB':
+#             page = page.convert('RGB')
+            
+#         # Use better OCR settings for improved accuracy
+#         custom_config = r'--oem 3 --psm 6 -c preserve_interword_spaces=1'
+#         data = pytesseract.image_to_data(page, output_type=pytesseract.Output.DICT, config=custom_config)
+
+#         page_text_words = []
+#         for j in range(len(data['text'])):
+#             text = data['text'][j].strip()
+#             if text:
+#                 word_info = {
+#                     'text': text,
+#                     'left': data['left'][j],
+#                     'top': data['top'][j],
+#                     'width': data['width'][j],
+#                     'height': data['height'][j],
+#                     'page_num': page_num,
+#                     'conf': data['conf'][j]  # Add confidence score
+#                 }
+#                 all_text_data.append(word_info)
+#                 page_text_words.append(text)
+#         text_content_for_llm.append(f"\n--- Page {page_num} ---\n{' '.join(page_text_words)}")
+
+#     return all_text_data, "\n".join(text_content_for_llm)
+
+# def get_color_for_field(field_name, value, requested_fields):
+#     """Determine the appropriate color based on field name, value type, and user request."""
+#     field_name_lower = field_name.lower()
+#     # Use unique color for each default field
+#     for key in colors:
+#         if key.lower() == field_name_lower:
+#             return colors[key]
+#     # If field is requested by user, fallback to green
+#     if field_name_lower in requested_fields:
+#         return colors['user_requested']
+#     # Fallback to gray
+#     return colors['default']
+
+# def highlight_pdf(original_pdf_path, extracted_data, user_input_prompt=""):
+#     """
+#     Highlights the extracted data in the PDF using PyMuPDF with improved accuracy.
+#     `extracted_data` is the JSON object from the LLM.
+#     `user_input_prompt` is the user's request to identify which fields to highlight in green.
+#     """
+#     doc = fitz.open(original_pdf_path)
+#     unique_id = str(uuid.uuid4())
+#     highlighted_pdf_filename = f"highlighted_{unique_id}.pdf"
+#     output_pdf_path = os.path.join(PDF_STORAGE_DIR, highlighted_pdf_filename)
+
+#     def format_value_for_search(value):
+#         """Format value for better search matching."""
+#         if isinstance(value, (int, float)):
+#             # Try different number formats
+#             return [
+#                 str(value),
+#                 f"{value:,.2f}",
+#                 f"{value:.2f}",
+#                 f"${value:,.2f}",
+#                 f"£{value:,.2f}",
+#                 f"€{value:,.2f}"
+#             ]
+#         elif isinstance(value, str):
+#             # Try different case variations and common formats
+#             return [
+#                 value,
+#                 value.lower(),
+#                 value.upper(),
+#                 value.title(),
+#                 value.strip(),
+#                 value.replace('-', ' '),
+#                 value.replace('_', ' ')
+#             ]
+#         return [str(value)]
+
+#     def find_best_match(page, search_values, field_name, label_variations=None):
+#         """Find the best matching text instance on the page using multiple strategies."""
+#         best_match = None
+#         best_score = 0
+#         found = False
+#         # 1. Try exact and case-insensitive matches
+#         for search_value in search_values:
+#             text_instances = page.search_for(search_value, quads=True)
+#             for inst in text_instances:
+#                 rect = inst.rect
+#                 surrounding_text = page.get_text("text", clip=rect)
+#                 score = len(search_value) / len(surrounding_text) if surrounding_text else 0
+#                 if search_value.lower() == surrounding_text.lower().strip():
+#                     score *= 1.5
+#                 if field_name.lower() in [f.lower() for f in default_fields.keys()]:
+#                     score *= 1.2
+#                 if score > best_score:
+#                     best_score = score
+#                     best_match = inst
+#                     found = True
+#         # 2. Fuzzy/partial match if not found
+#         if not found:
+#             page_text = page.get_text("text")
+#             for search_value in search_values:
+#                 matches = difflib.get_close_matches(search_value, page_text.split(), n=1, cutoff=0.8)
+#                 if matches:
+#                     text_instances = page.search_for(matches[0], quads=True)
+#                     if text_instances:
+#                         best_match = text_instances[0]
+#                         found = True
+#                         break
+#         # 3. If still not found, try to highlight the label
+#         if not found and label_variations:
+#             for label in label_variations:
+#                 text_instances = page.search_for(label, quads=True)
+#                 if text_instances:
+#                     best_match = text_instances[0]
+#                     found = True
+#                     break
+#         return best_match, found
+
+#     # Extract fields requested by the user
+#     requested_fields = extract_requested_fields(user_input_prompt)
+
+#     missing_highlights = []
+#     # Process each field in the extracted data
+#     for field_name, value in extracted_data.items():
+#         if value is None or (isinstance(value, str) and value.lower() == "no data found."):
+#             continue
+#         highlight_color = get_color_for_field(field_name, value, requested_fields)
+#         search_values = format_value_for_search(value)
+#         label_variations = default_fields.get(field_name, [field_name])
+#         field_highlighted = False
+#         for page_num in range(doc.page_count):
+#             page = doc[page_num]
+#             best_match, found = find_best_match(page, search_values, field_name, label_variations)
+#             if best_match:
+#                 highlight = page.add_highlight_annot(best_match.rect)
+#                 highlight.set_colors(stroke=highlight_color)
+#                 if field_name.lower() in requested_fields:
+#                     opacity = 0.7
+#                 elif field_name.lower() == 'lp name':
+#                     opacity = 0.8
+#                 else:
+#                     opacity = 0.5
+#                 highlight.set_opacity(opacity)
+#                 if field_name.lower() in requested_fields:
+#                     highlight.set_info(title=f"User Requested: {field_name}")
+#                 elif field_name.lower() == 'lp name':
+#                     highlight.set_info(title=f"LP Name: {value}")
+#                 else:
+#                     highlight.set_info(title=f"Field: {field_name}")
+#                 highlight.update()
+#                 field_highlighted = True
+#                 break  # Stop after first match on any page
+#         if not field_highlighted:
+#             missing_highlights.append(field_name)
+#     # Log missing highlights
+#     if missing_highlights:
+#         print(f"Warning: Could not highlight the following fields: {missing_highlights}")
+
+#     # Save the highlighted PDF
+#     doc.save(output_pdf_path)
+#     doc.close()
+#     return highlighted_pdf_filename, output_pdf_path
+
+# def rgb_tuple_to_hex(rgb_tuple):
+#     """Convert an RGB tuple (0-1 floats) to a hex color string."""
+#     return '#{:02x}{:02x}{:02x}'.format(
+#         int(rgb_tuple[0]*255), int(rgb_tuple[1]*255), int(rgb_tuple[2]*255)
+#     )
+
+# def process_pdf_with_llm(file, llm_model_name, user_input_prompt):
+#     """
+#     A helper function to handle the common logic for both Ollama and Gemini uploads.
+#     """
+#     file_ext = os.path.splitext(file.filename)[1]
+#     if file_ext.lower() not in ['.pdf']:
+#         return jsonify({'error': 'Only PDF files are supported for highlighting.'}), 400
+
+#     original_file_path = None
+#     try:
+#         # Create a temporary file to save the uploaded PDF
+#         with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+#             file.save(tmp_file.name)
+#             original_file_path = tmp_file.name
+
+#         # --- OCR and LLM Processing ---
+#         text_coords, extracted_text_for_llm = extract_text_with_coords_from_pdf(original_file_path)
+
+#         # Prepare the prompt for the LLM
+#         full_prompt_for_llm = prompt_template + user_input_prompt
+
+#         llm_raw_result = ""
+#         if llm_model_name == "ollama":
+#             if model_ollama is None:
+#                 raise RuntimeError('Ollama model not initialized. Check server logs.')
+#             llm_prompt_template_obj = ChatPromptTemplate.from_template(full_prompt_for_llm)
+#             llm_raw_result = (llm_prompt_template_obj | model_ollama).invoke({"text": extracted_text_for_llm})
+#         elif llm_model_name == "gemini":
+#             if model_gemini is None:
+#                 raise RuntimeError('Gemini model not initialized. Check API key and network.')
+#             full_prompt_content_for_gemini = prompt_template.format(text=extracted_text_for_llm) + user_input_prompt
+#             response = model_gemini.generate_content(full_prompt_content_for_gemini)
+#             llm_raw_result = response.text
+#         else:
+#             raise ValueError('Invalid LLM model specified.')
+
+#         llm_json_result = json.loads(llm_raw_result)
+
+#         # --- PDF Highlighting ---
+#         highlighted_filename, highlighted_absolute_path = highlight_pdf(original_file_path, llm_json_result, user_input_prompt)
+
+#         # --- Build color-coded JSON result ---
+#         # Use the same color logic as in highlight_pdf
+#         color_json_result = {}
+#         requested_fields = extract_requested_fields(user_input_prompt)
+#         for field_name, value in llm_json_result.items():
+#             color = get_color_for_field(field_name, value, requested_fields)
+#             color_json_result[field_name] = {
+#                 "value": value,
+#                 "color": rgb_tuple_to_hex(color)
+#             }
+
+#         # --- Final Response ---
+#         return jsonify({
+#             "result": color_json_result,
+#             "highlighted_pdf_url": f"/download_pdf/{highlighted_filename}"
+#         })
+
+#     except json.JSONDecodeError as e:
+#         print(f"LLM output is not valid JSON:\n{llm_raw_result}\nError: {e}")
+#         return jsonify({'error': f"LLM output is not valid JSON. Please refine prompt or check LLM response format: {e}", 'raw_output': llm_raw_result}), 500
+#     except Exception as e:
+#         print(f"Error during PDF processing or LLM invocation: {str(e)}")
+#         return jsonify({'error': f"An unexpected error occurred: {str(e)}"}), 500
+#     finally:
+#         # Ensure the original temporary file is cleaned up after all operations
+#         if original_file_path and os.path.exists(original_file_path):
+#             os.unlink(original_file_path)
+
+# @app.route('/upload_ollama', methods=['POST'])
+# def upload_ollama_route():
+#     userInputPrompt = request.values.get('userinput', '')
+#     if 'file' not in request.files:
+#         return jsonify({'error': 'No file part'}), 400
+#     file = request.files['file']
+#     if file.filename == '':
+#         return jsonify({'error': 'No selected file'}), 400
+#     return process_pdf_with_llm(file, "ollama", userInputPrompt)
+
+# @app.route('/upload_gemini', methods=['POST'])
+# def upload_gemini_route():
+#     userInputPrompt = request.values.get('userinput', '')
+#     if 'file' not in request.files:
+#         return jsonify({'error': 'No file part'}), 400
+#     file = request.files['file']
+#     if file.filename == '':
+#         return jsonify({'error': 'No selected file'}), 400
+#     return process_pdf_with_llm(file, "gemini", userInputPrompt)
+
+# @app.route('/download_pdf/<filename>', methods=['GET'])
+# def download_pdf(filename):
+#     """
+#     Serves a highlighted PDF based on its unique filename.
+#     Supports both preview (inline) and download (attachment) via a query parameter.
+#     """
+#     pdf_path = os.path.join(PDF_STORAGE_DIR, filename)
+
+#     if not os.path.exists(pdf_path):
+#         return jsonify({'error': 'PDF not found or has expired.'}), 404
+
+#     # Determine if the request is for preview or download
+#     as_attachment = request.args.get('download', 'false').lower() == 'true'
+
+#     response = send_file(pdf_path, mimetype='application/pdf', as_attachment=as_attachment, download_name=filename)
+
+#     if not as_attachment:
+#         response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
+#     return response
+
+# if __name__ == '__main__':
+#     app.run(debug=True, port=5000) 
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from langchain_ollama import OllamaLLM
@@ -1326,47 +1782,58 @@ import fitz  # PyMuPDF
 import uuid  # For generating unique filenames
 import shutil  # For safely handling directories
 import difflib  # For fuzzy matching
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
+import hashlib
+import time
+ 
 app = Flask(__name__)
 CORS(app, origins=["http://localhost:3000"])
-
+ 
 # Configure paths for Tesseract and Poppler
 try:
     pytesseract.pytesseract.tesseract_cmd = r'D:\MSCI\OCR\tesseract\tesseract.exe'
 except pytesseract.TesseractNotFoundError:
     print("Tesseract is not found. Please install it and update 'pytesseract.pytesseract.tesseract_cmd'.")
-
+ 
 poppler_path = r'D:\MSCI\OCR\poppler-24.08.0\Library\bin'
 if not os.path.exists(poppler_path):
     print(f"Poppler path not found: {poppler_path}. PDF conversion might fail.")
-
+ 
 # Initialize LLM models
 model_ollama = None
 model_gemini = None
-
+ 
 try:
     model_ollama = OllamaLLM(model="llama3:latest")
 except Exception as e:
     print(f"Failed to initialize OllamaLLM: {e}. Ensure Ollama is running and 'llama3:latest' model is pulled.")
-
+ 
 try:
     # Replace with your actual Gemini API key
     genai.configure(api_key="YOUR_GEMINI_API_KEY")
     model_gemini = genai.GenerativeModel('gemini-1.5-flash')
 except Exception as e:
     print(f"Failed to configure Gemini API or initialize model: {e}. Check your API key and network.")
-
+ 
 # Directory to store highlighted PDFs temporarily
 PDF_STORAGE_DIR = os.path.join(tempfile.gettempdir(), 'highlighted_pdfs')
 os.makedirs(PDF_STORAGE_DIR, exist_ok=True)
-
+ 
+# Cache directory for processed PDFs
+CACHE_DIR = os.path.join(tempfile.gettempdir(), 'pdf_cache')
+os.makedirs(CACHE_DIR, exist_ok=True)
+ 
+# Cache duration in seconds (24 hours)
+CACHE_DURATION = 24 * 60 * 60
+ 
 # Prompt template for LLMs
 prompt_template = """
 You are a financial document analysis AI.
-
+ 
 ## Objective:
 Extract only the key financial KPIs from a Capital Call Statement, strictly following the user's request. Always return results in English, as a valid JSON object, with no extra text or explanation.
-
+ 
 ## Extraction Protocol:
 - If the user's prompt specifies fields, return **only** those fields.
 - Please understand the user requested fields and you should return those field to the user only
@@ -1376,48 +1843,48 @@ Extract only the key financial KPIs from a Capital Call Statement, strictly foll
 - Use financial logic, context, and proximity to match values, even if labels differ or are missing.
 - Ignore irrelevant, cumulative, or historical values (e.g., fees, totals to date).
 - If a value cannot be reliably extracted, return it as null.
-
+ 
 ## Multilingual Handling:
 - If the uploaded document is in Spanish, French, or any other language, **automatically translate** all content to English before extraction.
 - Ensure all extracted values are accurate and contextually correct after translation.
 - Output must always be in English, regardless of input language.
-
+ 
 ## Output Format:
 - Return **only** a valid, minified JSON object with no extra text.
 - If the user's prompt is empty, use this template:
-
+ 
 {{
   "Commitment Date": "YYYY-MM-DD or null",
   "LP Name": "string or null",
   "Fund Name": "string or null",
-  "capital call amount": float or null,
-  "currency": "USD/GBP/EUR/CAD or null"
+  "Capital Call Amount": float or null,
+  "Currency": "USD/GBP/EUR/CAD or null"
 }}
-
+ 
 ## Phrase Mappings:
 commitment date:
 - Commitment Date, Date of Commitment, Subscription Date, Closing Date, Commitment Effective Date, Investor Commitment Date, Date Committed, Commitment Execution Date, Date of Subscription, Date of Agreement, Date of Acceptance, Date of Signature, Date Signed, Date of Participation, Date of Entry, Date of Joining, Date of Investment, Date of Initial Commitment
-
+ 
 effective date:
 - Effective Date, Capital Call Date, Drawdown Date, Notice Date, Issuance Date, Date of Call, Call Date, Payment Due Date, Date Payable, Date of Drawdown, Date of Notice, Date of Issuance, Date of Payment, Date Due, Due Date, Date Funds Due, Date of Capital Call, Date of Request, Date of Remittance, Remittance Date
-
+ 
 capital call amount:
 - Capital Call Amount, Total Amount, Drawdown Amount, Amount Called, Amount Due, Capital Requested, Capital Contribution, Amount Payable, This Call Amount, Current Call Amount, Amount to be Paid, Payment Amount, Amount Required, Amount Requested, Subscription Amount, Payable Amount, Amount Owed, Amount to Remit, Remittance Amount, Amount to be Contributed, Amount for this Call, Amount Payable on Notice, Amount to be Drawn, Amount to be Settled
-
+ 
 balance amount:
 - Deposit balance remaining, balance, remaining balance, outstanding balance, available balance, balance due, uncalled balance, undrawn balance, unpaid balance, amount remaining, amount outstanding, residual balance, ending balance, closing balance, balance to be paid, balance on account
-
+ 
 lp name:
 - Customer Name, Investor Name, Limited Partner, LP Name, LP, Investor, Partner Name, Subscriber Name, Account Holder, Client Name, Beneficiary Name, Holder Name, Shareholder Name, Owner Name
-
+ 
 fund name:
 - Fund Name, Name of Fund, Fund, Investment Fund, Fund Title, Name of the Fund, Fund Entity, Fund Vehicle, Name of Investment Fund, Name of the Investment Fund, Fund Legal Name, Name of Fund Issuer, Issuer Name, Fund Company, Fund Manager, Name of Fund Manager, Name of Issuer, Name of Fund Company
-
+ 
 currency:
 - "$" → "USD" or "CAD" (choose based on context)
 - "£" → "GBP"
 - "€" → "EUR"
-
+ 
 ## Extraction Rules:
 - Use context and proximity to match values to labels.
 - Normalize all numbers as floats (dot decimal).
@@ -1425,35 +1892,35 @@ currency:
 - If a date is ambiguous, prefer those near capital amounts or phrases like "Drawdown", "Call", or "Notice".
 - Use temporal order: commitment_date < effective_date.
 - If a date lacks a clear label, infer from its position relative to capital call text.
-
+ 
 ## Language & Output:
 - All output must be in English and valid JSON.
 - Never include explanations, formatting, or extra text—**only** the JSON object.
 - If the user requests specific data, return only that data.
-
+ 
 {text}
 """
-
+ 
 # Define default fields and their variations
 default_fields = {
     'Commitment Date': ['commitment date', 'date of commitment', 'subscription date'],
     'LP Name': ['lp name', 'investor name', 'limited partner', 'customer name'],
     'Fund Name': ['fund name', 'name of fund', 'investment fund'],
-    'capital call amount': ['capital call amount', 'amount', 'total amount', 'drawdown amount'],
-    'currency': ['currency', 'currency type', 'currency code']
+    'Capital Call Amount': ['capital call amount', 'amount', 'total amount', 'drawdown amount'],
+    'Currency': ['currency', 'currency type', 'currency code']
 }
-
+ 
 # Define unique colors for each default field for better identification
 colors = {
     'Commitment Date': (0.0, 0.8, 0.0),      # Green
     'LP Name': (0.8, 0.0, 0.8),              # Purple
     'Fund Name': (0.0, 0.6, 1.0),            # Blue
-    'capital call amount': (1.0, 0.6, 0.0),  # Orange
-    'currency': (1.0, 0.0, 0.0),             # Red
+    'Capital Call Amount': (1.0, 0.6, 0.0),  # Orange
+    'Currency': (1.0, 0.0, 0.0),             # Red
     'user_requested': (0.0, 0.8, 0.0),       # Green (fallback for user-requested)
     'default': (0.0, 0.8, 0.0)            # Gray for any other fields
 }
-
+ 
 def extract_requested_fields(prompt):
     """Extract field names from user prompt."""
     requested_fields = set()
@@ -1462,59 +1929,103 @@ def extract_requested_fields(prompt):
         if any(var in prompt_lower for var in variations):
             requested_fields.add(field.lower())
     return requested_fields
-
+ 
+@lru_cache(maxsize=100)
+def get_cached_pdf_data(pdf_hash):
+    """Retrieve cached PDF data if available and not expired."""
+    cache_file = os.path.join(CACHE_DIR, f"{pdf_hash}.json")
+    if os.path.exists(cache_file):
+        if time.time() - os.path.getmtime(cache_file) < CACHE_DURATION:
+            with open(cache_file, 'r') as f:
+                return json.load(f)
+    return None
+ 
+def save_pdf_data_to_cache(pdf_hash, data):
+    """Save processed PDF data to cache."""
+    cache_file = os.path.join(CACHE_DIR, f"{pdf_hash}.json")
+    with open(cache_file, 'w') as f:
+        json.dump(data, f)
+ 
+def process_page_with_ocr(page, page_num):
+    """Process a single page with OCR in parallel."""
+    if page.mode != 'RGB':
+        page = page.convert('RGB')
+   
+    custom_config = r'--oem 3 --psm 6 -c preserve_interword_spaces=1'
+    data = pytesseract.image_to_data(page, output_type=pytesseract.Output.DICT, config=custom_config)
+   
+    page_text_words = []
+    word_info_list = []
+   
+    for j in range(len(data['text'])):
+        text = data['text'][j].strip()
+        if text:
+            word_info = {
+                'text': text,
+                'left': data['left'][j],
+                'top': data['top'][j],
+                'width': data['width'][j],
+                'height': data['height'][j],
+                'page_num': page_num,
+                'conf': data['conf'][j]
+            }
+            word_info_list.append(word_info)
+            page_text_words.append(text)
+   
+    return word_info_list, f"\n--- Page {page_num} ---\n{' '.join(page_text_words)}"
+ 
 def extract_text_with_coords_from_pdf(pdf_path):
     """
-    Extracts text and bounding box coordinates from a PDF using Tesseract.
-    Returns a list of dictionaries, each containing 'text', 'left', 'top', 'width', 'height', 'page_num',
-    and a string of all extracted text for LLM processing.
+    Optimized text extraction with parallel processing and caching.
     """
-    all_text_data = []
-    text_content_for_llm = []
-
+    # Generate hash of PDF file for caching
+    with open(pdf_path, 'rb') as f:
+        pdf_hash = hashlib.md5(f.read()).hexdigest()
+   
+    # Check cache first
+    cached_data = get_cached_pdf_data(pdf_hash)
+    if cached_data:
+        return cached_data['text_coords'], cached_data['text_content']
+   
     try:
-        # Increased DPI for better quality and color accuracy
+        # Optimize PDF conversion settings
         pages = convert_from_path(
             pdf_path,
-            dpi=600,  # Increased from 300 to 600 for better quality
+            dpi=300,  # Reduced DPI for better performance while maintaining quality
             poppler_path=poppler_path,
-            use_pdftocairo=True,  # Use pdftocairo for better color handling
-            grayscale=False,  # Ensure color is preserved
-            thread_count=4  # Parallel processing for better performance
+            use_pdftocairo=True,
+            grayscale=False,
+            thread_count=4
         )
+       
+        all_text_data = []
+        text_content_for_llm = []
+       
+        # Process pages in parallel
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            future_to_page = {
+                executor.submit(process_page_with_ocr, page, i+1): i
+                for i, page in enumerate(pages)
+            }
+           
+            for future in as_completed(future_to_page):
+                word_info_list, page_text = future.result()
+                all_text_data.extend(word_info_list)
+                text_content_for_llm.append(page_text)
+       
+        result = {
+            'text_coords': all_text_data,
+            'text_content': "\n".join(text_content_for_llm)
+        }
+       
+        # Cache the results
+        save_pdf_data_to_cache(pdf_hash, result)
+       
+        return all_text_data, "\n".join(text_content_for_llm)
+       
     except Exception as e:
-        raise RuntimeError(f"Poppler error during PDF conversion. Check poppler_path and installation: {e}")
-
-    for i, page in enumerate(pages):
-        page_num = i + 1
-        
-        # Convert to RGB mode to ensure consistent color handling
-        if page.mode != 'RGB':
-            page = page.convert('RGB')
-            
-        # Use better OCR settings for improved accuracy
-        custom_config = r'--oem 3 --psm 6 -c preserve_interword_spaces=1'
-        data = pytesseract.image_to_data(page, output_type=pytesseract.Output.DICT, config=custom_config)
-
-        page_text_words = []
-        for j in range(len(data['text'])):
-            text = data['text'][j].strip()
-            if text:
-                word_info = {
-                    'text': text,
-                    'left': data['left'][j],
-                    'top': data['top'][j],
-                    'width': data['width'][j],
-                    'height': data['height'][j],
-                    'page_num': page_num,
-                    'conf': data['conf'][j]  # Add confidence score
-                }
-                all_text_data.append(word_info)
-                page_text_words.append(text)
-        text_content_for_llm.append(f"\n--- Page {page_num} ---\n{' '.join(page_text_words)}")
-
-    return all_text_data, "\n".join(text_content_for_llm)
-
+        raise RuntimeError(f"Error during PDF processing: {e}")
+ 
 def get_color_for_field(field_name, value, requested_fields):
     """Determine the appropriate color based on field name, value type, and user request."""
     field_name_lower = field_name.lower()
@@ -1527,7 +2038,7 @@ def get_color_for_field(field_name, value, requested_fields):
         return colors['user_requested']
     # Fallback to gray
     return colors['default']
-
+ 
 def highlight_pdf(original_pdf_path, extracted_data, user_input_prompt=""):
     """
     Highlights the extracted data in the PDF using PyMuPDF with improved accuracy.
@@ -1538,7 +2049,7 @@ def highlight_pdf(original_pdf_path, extracted_data, user_input_prompt=""):
     unique_id = str(uuid.uuid4())
     highlighted_pdf_filename = f"highlighted_{unique_id}.pdf"
     output_pdf_path = os.path.join(PDF_STORAGE_DIR, highlighted_pdf_filename)
-
+ 
     def format_value_for_search(value):
         """Format value for better search matching."""
         if isinstance(value, (int, float)):
@@ -1563,7 +2074,7 @@ def highlight_pdf(original_pdf_path, extracted_data, user_input_prompt=""):
                 value.replace('_', ' ')
             ]
         return [str(value)]
-
+ 
     def find_best_match(page, search_values, field_name, label_variations=None):
         """Find the best matching text instance on the page using multiple strategies."""
         best_match = None
@@ -1604,10 +2115,10 @@ def highlight_pdf(original_pdf_path, extracted_data, user_input_prompt=""):
                     found = True
                     break
         return best_match, found
-
+ 
     # Extract fields requested by the user
     requested_fields = extract_requested_fields(user_input_prompt)
-
+ 
     missing_highlights = []
     # Process each field in the extracted data
     for field_name, value in extracted_data.items():
@@ -1644,39 +2155,40 @@ def highlight_pdf(original_pdf_path, extracted_data, user_input_prompt=""):
     # Log missing highlights
     if missing_highlights:
         print(f"Warning: Could not highlight the following fields: {missing_highlights}")
-
+ 
     # Save the highlighted PDF
     doc.save(output_pdf_path)
     doc.close()
     return highlighted_pdf_filename, output_pdf_path
-
+ 
 def rgb_tuple_to_hex(rgb_tuple):
     """Convert an RGB tuple (0-1 floats) to a hex color string."""
     return '#{:02x}{:02x}{:02x}'.format(
         int(rgb_tuple[0]*255), int(rgb_tuple[1]*255), int(rgb_tuple[2]*255)
     )
-
+ 
 def process_pdf_with_llm(file, llm_model_name, user_input_prompt):
     """
-    A helper function to handle the common logic for both Ollama and Gemini uploads.
+    Optimized PDF processing with caching and progress tracking.
     """
     file_ext = os.path.splitext(file.filename)[1]
     if file_ext.lower() not in ['.pdf']:
         return jsonify({'error': 'Only PDF files are supported for highlighting.'}), 400
-
+ 
     original_file_path = None
     try:
         # Create a temporary file to save the uploaded PDF
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
             file.save(tmp_file.name)
             original_file_path = tmp_file.name
-
-        # --- OCR and LLM Processing ---
+ 
+        # Extract text with optimized OCR
         text_coords, extracted_text_for_llm = extract_text_with_coords_from_pdf(original_file_path)
-
+ 
         # Prepare the prompt for the LLM
         full_prompt_for_llm = prompt_template + user_input_prompt
-
+ 
+        # Process with selected LLM
         llm_raw_result = ""
         if llm_model_name == "ollama":
             if model_ollama is None:
@@ -1691,14 +2203,13 @@ def process_pdf_with_llm(file, llm_model_name, user_input_prompt):
             llm_raw_result = response.text
         else:
             raise ValueError('Invalid LLM model specified.')
-
+ 
         llm_json_result = json.loads(llm_raw_result)
-
-        # --- PDF Highlighting ---
+ 
+        # Highlight PDF with optimized processing
         highlighted_filename, highlighted_absolute_path = highlight_pdf(original_file_path, llm_json_result, user_input_prompt)
-
-        # --- Build color-coded JSON result ---
-        # Use the same color logic as in highlight_pdf
+ 
+        # Build color-coded JSON result
         color_json_result = {}
         requested_fields = extract_requested_fields(user_input_prompt)
         for field_name, value in llm_json_result.items():
@@ -1707,13 +2218,12 @@ def process_pdf_with_llm(file, llm_model_name, user_input_prompt):
                 "value": value,
                 "color": rgb_tuple_to_hex(color)
             }
-
-        # --- Final Response ---
+ 
         return jsonify({
             "result": color_json_result,
             "highlighted_pdf_url": f"/download_pdf/{highlighted_filename}"
         })
-
+ 
     except json.JSONDecodeError as e:
         print(f"LLM output is not valid JSON:\n{llm_raw_result}\nError: {e}")
         return jsonify({'error': f"LLM output is not valid JSON. Please refine prompt or check LLM response format: {e}", 'raw_output': llm_raw_result}), 500
@@ -1721,12 +2231,11 @@ def process_pdf_with_llm(file, llm_model_name, user_input_prompt):
         print(f"Error during PDF processing or LLM invocation: {str(e)}")
         return jsonify({'error': f"An unexpected error occurred: {str(e)}"}), 500
     finally:
-        # Ensure the original temporary file is cleaned up after all operations
         if original_file_path and os.path.exists(original_file_path):
             os.unlink(original_file_path)
-
+ 
 @app.route('/upload_ollama', methods=['POST'])
-def upload_ollama_route():
+def upload_ollama():
     userInputPrompt = request.values.get('userinput', '')
     if 'file' not in request.files:
         return jsonify({'error': 'No file part'}), 400
@@ -1734,7 +2243,7 @@ def upload_ollama_route():
     if file.filename == '':
         return jsonify({'error': 'No selected file'}), 400
     return process_pdf_with_llm(file, "ollama", userInputPrompt)
-
+ 
 @app.route('/upload_gemini', methods=['POST'])
 def upload_gemini_route():
     userInputPrompt = request.values.get('userinput', '')
@@ -1744,7 +2253,7 @@ def upload_gemini_route():
     if file.filename == '':
         return jsonify({'error': 'No selected file'}), 400
     return process_pdf_with_llm(file, "gemini", userInputPrompt)
-
+ 
 @app.route('/download_pdf/<filename>', methods=['GET'])
 def download_pdf(filename):
     """
@@ -1752,18 +2261,19 @@ def download_pdf(filename):
     Supports both preview (inline) and download (attachment) via a query parameter.
     """
     pdf_path = os.path.join(PDF_STORAGE_DIR, filename)
-
+ 
     if not os.path.exists(pdf_path):
         return jsonify({'error': 'PDF not found or has expired.'}), 404
-
+ 
     # Determine if the request is for preview or download
     as_attachment = request.args.get('download', 'false').lower() == 'true'
-
+ 
     response = send_file(pdf_path, mimetype='application/pdf', as_attachment=as_attachment, download_name=filename)
-
+ 
     if not as_attachment:
         response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
     return response
-
+ 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000) 
+    app.run(debug=True, port=5000, threaded=True)
+ 
